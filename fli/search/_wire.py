@@ -13,10 +13,9 @@ The Service returns JSONP-flavoured responses of the form::
 the legacy parsers in this package could get away with `lstrip(")]}'")`.
 `GetBookingResults` emits two chunks, so we need a proper multi-chunk reader.
 
-Important quirk: the length headers count UTF-8 **bytes**, not Python string
-characters. When the response contains any non-ASCII characters (which it
-sometimes does — airport names, airline names) the offsets diverge, so the
-reader must operate over the byte representation of the body.
+The length headers have varied between UTF-8 bytes and character-oriented
+counts across transports. The reader therefore treats them as framing markers
+and lets ``JSONDecoder.raw_decode`` find each payload's exact boundary.
 
 This module centralises that reader and exposes :func:`iter_wrb_chunks` which
 yields the decoded inner JSON of each ``wrb.fr`` chunk.
@@ -31,7 +30,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_PREFIX = b")]}'"
+_PREFIX = ")]}'"
 
 
 def iter_wrb_chunks(body: str | bytes) -> Iterator[Any]:
@@ -41,56 +40,58 @@ def iter_wrb_chunks(body: str | bytes) -> Iterator[Any]:
     ``GetShoppingResults`` / ``GetCalendarGraph`` shape) — those are parsed
     by falling back to a single JSON load over the trimmed body.
     """
-    if isinstance(body, str):
-        raw = body.encode("utf-8")
-    else:
-        raw = body
+    try:
+        text = body.decode("utf-8") if isinstance(body, bytes) else body
+    except UnicodeDecodeError:
+        logger.warning("Failed to decode wrb.fr body as UTF-8", exc_info=True)
+        return
 
-    raw = raw.lstrip()
-    if raw.startswith(_PREFIX):
-        raw = raw[len(_PREFIX) :]
-    raw = raw.lstrip()
+    text = text.lstrip()
+    if text.startswith(_PREFIX):
+        text = text[len(_PREFIX) :]
+    text = text.lstrip()
 
-    if not raw:
+    if not text:
         return
 
     # Fast path: no length headers (legacy single-chunk responses).
-    if not (b"0" <= raw[:1] <= b"9"):
+    if not text[:1].isdigit():
         try:
-            outer = json.loads(raw.decode("utf-8"))
-        except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+            outer = json.loads(text)
+        except (ValueError, json.JSONDecodeError):
             logger.warning("Failed to decode single-chunk wrb.fr body as JSON", exc_info=True)
             return
         yield from _chunks_from_outer(outer)
         return
 
+    decoder = json.JSONDecoder()
     cursor = 0
-    while cursor < len(raw):
+    while cursor < len(text):
+        while cursor < len(text) and text[cursor].isspace():
+            cursor += 1
+        if cursor >= len(text):
+            break
+
         # Read the decimal length prefix terminated by \n.
-        end = raw.find(b"\n", cursor)
+        end = text.find("\n", cursor)
         if end == -1:
             break
         try:
-            length = int(raw[cursor:end])
+            int(text[cursor:end].strip())
         except ValueError:
             logger.warning(
                 "Malformed length header at offset %d; truncating chunk stream",
                 cursor,
             )
             break
-        # Google's length header counts the leading newline after the header
-        # AND the trailing newline that separates this chunk from the next.
-        # We've already consumed the leading newline (it terminated the header),
-        # so we read `length - 1` bytes which gives JSON + trailing \n.
         cursor = end + 1
-        chunk_bytes = max(length - 1, 0)
-        payload = raw[cursor : cursor + chunk_bytes]
-        cursor += chunk_bytes
+        while cursor < len(text) and text[cursor].isspace():
+            cursor += 1
         try:
-            outer = json.loads(payload.strip().decode("utf-8"))
-        except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+            outer, cursor = decoder.raw_decode(text, cursor)
+        except (ValueError, json.JSONDecodeError):
             logger.warning("Discarding malformed wrb.fr chunk", exc_info=True)
-            continue
+            break
         yield from _chunks_from_outer(outer)
 
 

@@ -35,6 +35,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+browser = [
+    "playwright==1.62.0",
+]
 mcp = [
     "fastapi>=0.115.6",
     "fastmcp>=3.2",
@@ -42,6 +45,7 @@ mcp = [
     "uvicorn>=0.34.0",
 ]
 all = [
+    "flights[browser]",
     "flights[mcp]",
 ]
 dev = [

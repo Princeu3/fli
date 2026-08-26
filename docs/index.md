@@ -1,9 +1,10 @@
 # Fli Documentation
 
 Fli provides direct, reverse-engineered access to Google Flights' API. Unlike
-libraries that scrape HTML or drive a browser, Fli speaks the Flights API
-directly — making it fast, reliable, and far less likely to break when the UI
-changes.
+libraries that scrape flight cards, Fli reads Google Flights' structured data
+directly — making searches fast and less likely to break when the UI changes.
+An optional Chromium transport is available only for booking options when
+Google requires a browser-signed request.
 
 Fli ships in two flavors with a shared design:
 
@@ -17,7 +18,9 @@ filter encoding, same wire-format decoders.
 
 ## Key Features
 
-* **Direct API access** — no scraping, no browser automation, no HTML parsing.
+* **Structured search transport** — no flight-card scraping or browser required.
+* **Optional signed booking transport** — Chromium fallback for vendor fares
+  when Google rejects the direct booking RPC.
 * **Rich search** — one-way, round-trip, and multi-city; cabin classes; stop
   and layover limits; airline/alliance include & exclude; currency and locale.
 * **Cheapest-date search** — scan a flexible date window for the best fares.

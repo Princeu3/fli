@@ -15,18 +15,15 @@ def _single_chunk(payload):
 def _multi_chunk(*payloads):
     """Build a multi-chunk response with explicit length prefixes.
 
-    Mirrors Google's actual format: each length header counts both the
-    leading newline that follows the header AND the trailing newline that
-    separates this chunk from the next (i.e. ``len(outer_json) + 1``).
+    Mirrors one observed Google format where each length header counts the
+    UTF-8 payload bytes plus the surrounding newlines.
     """
     parts = [")]}'\n\n"]
     for p in payloads:
         inner_json = json.dumps(p, separators=(",", ":"))
         outer_json = json.dumps([["wrb.fr", None, inner_json]], separators=(",", ":"))
-        # The length header counts UTF-8 BYTES (not Python str chars) plus
-        # the two surrounding newlines. Encoding the JSON before measuring
-        # keeps the test correct when payloads contain non-ASCII characters
-        # like accented airport names or Japanese carrier strings.
+        # This observed transport counts UTF-8 bytes plus newlines. The parser
+        # also accepts browser responses whose header uses character counts.
         byte_len = len(outer_json.encode("utf-8")) + 2
         parts.append(f"{byte_len}\n{outer_json}\n")
     return "".join(parts)
@@ -57,9 +54,7 @@ class TestIterWrbChunks:
         assert list(iter_wrb_chunks(body)) == []
 
     def test_non_ascii_chunk_payload(self):
-        # The length header counts UTF-8 bytes, not characters — confirm a
-        # payload with multi-byte chars round-trips correctly (regression
-        # guard for the byte-vs-char-length bug in the test helper).
+        # Confirm a payload with multi-byte characters round-trips correctly.
         body = _multi_chunk([1, "東京", "café", "résumé"])
         chunks = list(iter_wrb_chunks(body))
         assert chunks == [[1, "東京", "café", "résumé"]]

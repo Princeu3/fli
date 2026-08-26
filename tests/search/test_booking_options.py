@@ -3,6 +3,7 @@
 import json
 import urllib.parse
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -27,8 +28,8 @@ def _round_trip_filters():
         flight_number="171",
         departure_airport=Airport.JFK,
         arrival_airport=Airport.LAX,
-        departure_datetime=datetime(2026, 7, 15, 6, 0),
-        arrival_datetime=datetime(2026, 7, 15, 9, 1),
+        departure_datetime=datetime(2030, 7, 15, 6, 0),
+        arrival_datetime=datetime(2030, 7, 15, 9, 1),
         duration=361,
     )
     leg_in = FlightLeg(
@@ -36,8 +37,8 @@ def _round_trip_filters():
         flight_number="28",
         departure_airport=Airport.LAX,
         arrival_airport=Airport.JFK,
-        departure_datetime=datetime(2026, 7, 19, 15, 15),
-        arrival_datetime=datetime(2026, 7, 19, 23, 54),
+        departure_datetime=datetime(2030, 7, 19, 15, 15),
+        arrival_datetime=datetime(2030, 7, 19, 23, 54),
         duration=339,
     )
     sel_out = FlightResult(
@@ -57,13 +58,13 @@ def _round_trip_filters():
     seg_out = FlightSegment(
         departure_airport=[[Airport.JFK, 0]],
         arrival_airport=[[Airport.LAX, 0]],
-        travel_date="2026-07-15",
+        travel_date="2030-07-15",
         selected_flight=sel_out,
     )
     seg_in = FlightSegment(
         departure_airport=[[Airport.LAX, 0]],
         arrival_airport=[[Airport.JFK, 0]],
-        travel_date="2026-07-19",
+        travel_date="2030-07-19",
         selected_flight=sel_in,
     )
     return FlightSearchFilters(
@@ -102,9 +103,9 @@ class TestEncodeBookingPayload:
         assert len(segments) == 2
         # selected_flight legs sit at segment[8]; verify each leg's basic fields.
         out_sel = segments[0][8]
-        assert out_sel == [["JFK", "2026-07-15", "LAX", None, "AA", "171"]]
+        assert out_sel == [["JFK", "2030-07-15", "LAX", None, "AA", "171"]]
         in_sel = segments[1][8]
-        assert in_sel == [["LAX", "2026-07-19", "JFK", None, "AA", "28"]]
+        assert in_sel == [["LAX", "2030-07-19", "JFK", None, "AA", "28"]]
 
 
 class TestGetBookingOptionsTokenGuard:
@@ -246,6 +247,87 @@ class TestGetBookingOptionsErrorPaths:
             opts = sf.get_booking_options(flight, filters, currency="USD")
         assert opts == []
 
+    def test_rejected_direct_rpc_falls_back_to_browser_response(self):
+        """A browser-signed response is parsed after Google's error 13."""
+        from unittest.mock import patch
+
+        sf = SearchFlights()
+        sf._last_session_id = "S"
+        filters = _round_trip_filters()
+        flight = (
+            filters.flight_segments[0].selected_flight,
+            filters.flight_segments[1].selected_flight,
+        )
+        rejected = json.dumps([["wrb.fr", None, None, None, None, [13]]])
+        direct_body = f")]}}'\n\n{rejected}"
+        fixture = Path(__file__).parent / "fixtures" / "booking_results_aa_jfk_lax.bin"
+
+        fake_response = type(
+            "R",
+            (),
+            {
+                "text": direct_body,
+                "raise_for_status": lambda self: None,
+            },
+        )()
+        with (
+            patch.object(sf.client, "post", return_value=fake_response),
+            patch(
+                "fli.search.flights.fetch_browser_booking_response",
+                return_value=fixture.read_bytes(),
+            ) as browser_fetch,
+        ):
+            options = sf.get_booking_options(
+                flight,
+                filters,
+                currency="USD",
+                language="en-US",
+                country="US",
+                browser_fallback=True,
+                browser_timeout_ms=12_345,
+            )
+
+        assert len(options) == 3
+        browser_fetch.assert_called_once()
+        assert browser_fetch.call_args.kwargs == {
+            "language": "en-US",
+            "timeout_ms": 12_345,
+        }
+
+    def test_empty_direct_rpc_falls_back_to_browser_response(self):
+        """A payload without booking rows also triggers the opt-in browser."""
+        from unittest.mock import patch
+
+        sf = SearchFlights()
+        sf._last_session_id = "S"
+        filters = _round_trip_filters()
+        flight = filters.flight_segments[1].selected_flight
+        empty_response = type(
+            "R",
+            (),
+            {
+                "text": ")]}'\n\n4\n[[]]\n",
+                "raise_for_status": lambda self: None,
+            },
+        )()
+        browser_body = ")]}'\n\n4\n[[]]\n"
+
+        with (
+            patch.object(sf.client, "post", return_value=empty_response),
+            patch(
+                "fli.search.flights.fetch_browser_booking_response",
+                return_value=browser_body.encode(),
+            ) as browser_fetch,
+        ):
+            options = sf.get_booking_options(
+                flight,
+                filters,
+                browser_fallback=True,
+            )
+
+        assert options == []
+        browser_fetch.assert_called_once()
+
 
 class TestEncodeBookingPayloadValidation:
     """``_encode_booking_payload`` rejects filters that can't produce a main struct."""
@@ -294,14 +376,16 @@ class TestGetBookingOptionsSessionCaching:
                 None,
             ],
         ]
-        # Wrap as the chunked outer the client expects.
-        outer_inner_json = json.dumps(fake_inner, separators=(",", ":"))
-        outer = [["wrb.fr", None, outer_inner_json]]
-        body = ")]}'\n\n" + json.dumps(outer)
+        # Wrap as the public page's inline ``ds:1`` payload.
+        inner_json = json.dumps(fake_inner, separators=(",", ":"))
+        body = (
+            "AF_initDataCallback({key: 'ds:1', hash: 'test', data:"
+            f"{inner_json}, sideChannel: {{}}}});"
+        )
 
-        with patch.object(sf.client, "post") as mock_post:
+        with patch.object(sf.client, "get") as mock_get:
             mock_response = type("R", (), {"text": body, "raise_for_status": lambda s: None})()
-            mock_post.return_value = mock_response
+            mock_get.return_value = mock_response
             try:
                 sf.search(_round_trip_filters())
             except Exception:

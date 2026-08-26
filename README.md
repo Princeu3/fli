@@ -107,6 +107,19 @@ The MCP server provides two main tools:
 pip install flights
 ```
 
+For booking options on environments where Google rejects the direct
+`GetBookingResults` RPC, install the optional Chromium transport:
+
+```bash
+pip install "flights[browser]"
+python -m playwright install chromium
+```
+
+Then opt in per request with
+`SearchFlights.get_booking_options(..., browser_fallback=True)`. Flight search
+remains browser-free; Chromium opens only when the direct booking RPC is
+rejected or returns no vendor rows.
+
 ```bash
 # Install using pipx (recommended for CLI)
 pipx install flights

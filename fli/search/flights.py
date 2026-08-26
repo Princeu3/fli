@@ -20,6 +20,7 @@ from fli.models import (
     FlightSearchFilters,
 )
 from fli.models.google_flights.base import SortBy, TripType
+from fli.search._browser import DEFAULT_BROWSER_TIMEOUT_MS, fetch_browser_booking_response
 from fli.search._concurrency import parallel_map
 from fli.search._decoders import (
     _try_parse_booking_row,  # noqa: F401 — back-compat re-export for tests
@@ -37,6 +38,7 @@ from fli.search._urls import with_locale_params
 from fli.search._urls import with_locale_params as _with_locale_params  # noqa: F401
 from fli.search._wire import iter_wrb_chunks
 from fli.search.client import get_client
+from fli.search.exceptions import SearchRejectedError
 
 logger = logging.getLogger(__name__)
 
@@ -259,6 +261,8 @@ class SearchFlights:
         country: str | None = None,
         booking_token: str | None = None,
         session_id: str | None = None,
+        browser_fallback: bool = False,
+        browser_timeout_ms: int = DEFAULT_BROWSER_TIMEOUT_MS,
     ) -> list[BookingOption]:
         """Fetch bookable fare options for a selected itinerary.
 
@@ -285,6 +289,12 @@ class SearchFlights:
             session_id: Explicit override for the session id used to build
                 the token. Defaults to the session captured by the most
                 recent :meth:`search` call on this client.
+            browser_fallback: Open the itinerary in a short-lived Chromium
+                session when Google rejects the direct RPC or returns no
+                booking rows. Requires the optional ``flights[browser]`` extra
+                and an installed Chromium binary.
+            browser_timeout_ms: Maximum time to wait for the browser-signed
+                ``GetBookingResults`` response.
 
         Returns:
             A list of :class:`BookingOption`. Empty list when Google
@@ -373,7 +383,32 @@ class SearchFlights:
         # parsing so we can parse them in parallel — each chunk is a few
         # hundred KB of pure-Python tree walking, GIL-bound but cheap to
         # overlap with the next chunk's JSON decode (which releases the GIL).
-        chunks = list(iter_wrb_chunks(response.text))
+        try:
+            options = self._parse_booking_response(response.text)
+        except SearchRejectedError:
+            if not browser_fallback:
+                raise
+            options = []
+        if options or not browser_fallback:
+            return options
+
+        booking_url = self.build_flight_booking_url(
+            flight,
+            currency=currency,
+            language=language,
+            country=country,
+        )
+        body = fetch_browser_booking_response(
+            booking_url,
+            language=language,
+            timeout_ms=browser_timeout_ms,
+        )
+        return self._parse_booking_response(body)
+
+    @staticmethod
+    def _parse_booking_response(body: str | bytes) -> list[BookingOption]:
+        """Decode and combine every booking row in an RPC response body."""
+        chunks = list(iter_wrb_chunks(body))
         if not chunks:
             return []
         parsed = parallel_map(parse_booking_chunk, chunks)

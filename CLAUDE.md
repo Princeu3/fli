@@ -64,7 +64,8 @@ uv run mkdocs build         # Build static docs
 3. **Search Engine** (`fli/search/`)
    - `SearchFlights`: Core flight search using Google Flights API
    - `SearchDates`: Find cheapest dates within date ranges
-   - Direct API integration (no web scraping)
+   - Structured search-page integration (no flight-card scraping)
+   - Optional Chromium fallback for browser-signed booking RPCs
 
 4. **Data Models** (`fli/models/`)
    - **Base models**: `Airport`, `Airline` enums with IATA codes
@@ -86,7 +87,8 @@ uv run mkdocs build         # Build static docs
 
 ### Key Design Patterns
 
-- **Direct API Access**: Uses reverse-engineered Google Flights API endpoints (not web scraping)
+- **Structured Data Access**: Uses reverse-engineered Google Flights payloads instead of scraping flight cards
+- **Optional Browser Booking**: `flights[browser]` can capture browser-signed booking RPCs when direct calls are rejected
 - **Rate Limiting**: Built-in 10 req/sec limit with automatic retry logic
 - **Enum-Based Configuration**: Airports, airlines, seat types, etc. are strongly typed enums
 - **Filter Pattern**: Search functionality uses comprehensive filter objects
