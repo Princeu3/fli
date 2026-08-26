@@ -106,8 +106,8 @@ def build_tfs(filters: Any, *, travel_dates: list[str] | None = None) -> str:
     for index, segment in enumerate(filters.flight_segments):
         selected = segment.selected_flight
         segments += encode_tfs_segment(
-            _iata(segment.departure_airport[0][0]),
-            _iata(segment.arrival_airport[0][0]),
+            [_iata(airport[0]) for airport in segment.departure_airport],
+            [_iata(airport[0]) for airport in segment.arrival_airport],
             travel_dates[index] if travel_dates else segment.travel_date,
             legs=_legs_of(selected) if selected is not None else (),
             # MaxStops.ANY (0) must leave the field out — writing 0 for it
@@ -191,6 +191,15 @@ def apply_client_side_filters(flights: list[Any], filters: Any) -> list[Any]:
         if restrictions is not None:
             windows[index] = restrictions
 
+    active_segment = next(
+        (
+            index
+            for index, segment in enumerate(filters.flight_segments)
+            if segment.selected_flight is None
+        ),
+        max(0, len(filters.flight_segments) - 1),
+    )
+
     out = []
     for flight in flights:
         carriers = {_iata(leg.airline) for leg in flight.legs}
@@ -202,7 +211,7 @@ def apply_client_side_filters(flights: list[Any], filters: Any) -> list[Any]:
             continue
         if max_price is not None and flight.price and flight.price > max_price:
             continue
-        if not _within_window(flight, windows.get(0)):
+        if not _within_window(flight, windows.get(active_segment)):
             continue
         out.append(flight)
     return out

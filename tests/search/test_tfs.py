@@ -8,6 +8,7 @@ Everything here is offline — no live API calls.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 import pytest
 
@@ -46,7 +47,7 @@ OUTBOUND_DATE = "2026-09-15"
 RETURN_DATE = "2026-09-19"
 
 
-def _filters(segments, **kwargs) -> FlightSearchFilters:
+def _filters(segments: list[tuple[str, str, str]], **kwargs: Any) -> FlightSearchFilters:
     """Build filters over ``(origin, destination, date)`` triples."""
     return FlightSearchFilters(
         trip_type=kwargs.get("trip_type", TripType.ONE_WAY),
@@ -76,7 +77,12 @@ def _decode(tfs: str) -> bytes:
     return base64.urlsafe_b64decode(tfs + "=" * (-len(tfs) % 4))
 
 
-def _flight(airline: Airline = Airline.AA, price: float = 300, duration: int = 180, hour: int = 9):
+def _flight(
+    airline: Airline = Airline.AA,
+    price: float = 300,
+    duration: int = 180,
+    hour: int = 9,
+) -> FlightResult:
     return FlightResult(
         legs=[
             FlightLeg(
@@ -125,7 +131,11 @@ class TestBuildTfs:
             (MaxStops.TWO_OR_FEWER_STOPS, 2),
         ],
     )
-    def test_stop_ceiling_is_zero_based(self, stops, expected_ceiling):
+    def test_stop_ceiling_is_zero_based(
+        self,
+        stops: MaxStops,
+        expected_ceiling: int,
+    ) -> None:
         raw = _decode(build_tfs(_filters([("JFK", "LAX", OUTBOUND_DATE)], stops=stops)))
         # Field 5, varint: tag 0x28 followed by the ceiling.
         assert bytes([0x28, expected_ceiling]) in raw
@@ -133,6 +143,15 @@ class TestBuildTfs:
     def test_travel_dates_override_segment_dates(self):
         spec = _filters([("JFK", "LAX", OUTBOUND_DATE)])
         assert build_tfs(spec, travel_dates=["2026-10-01"]) != build_tfs(spec)
+
+    def test_multiple_airport_choices_are_all_encoded(self):
+        spec = _filters([("JFK", "LAX", OUTBOUND_DATE)])
+        spec.flight_segments[0].departure_airport = [[Airport.JFK, 0], [Airport.EWR, 0]]
+        spec.flight_segments[0].arrival_airport = [[Airport.LAX, 0], [Airport.BUR, 0]]
+
+        raw = _decode(build_tfs(spec))
+
+        assert all(code in raw for code in (b"JFK", b"EWR", b"LAX", b"BUR"))
 
     def test_selected_flight_uses_field_four(self):
         """Legs pin the search only in field 4.
@@ -234,6 +253,21 @@ class TestClientSideFilters:
         )
         kept = apply_client_side_filters(flights, spec)
         assert [f.legs[0].departure_datetime.hour for f in kept] == [20]
+
+    def test_expansion_uses_the_next_segments_time_window(self):
+        spec = _filters(
+            [("JFK", "LAX", OUTBOUND_DATE), ("LAX", "JFK", RETURN_DATE)],
+            trip_type=TripType.ROUND_TRIP,
+        )
+        spec.flight_segments[0].selected_flight = _flight()
+        spec.flight_segments[1].time_restrictions = TimeRestrictions(
+            earliest_departure=15,
+            latest_departure=18,
+        )
+
+        kept = apply_client_side_filters([_flight(hour=8), _flight(hour=16)], spec)
+
+        assert [f.legs[0].departure_datetime.hour for f in kept] == [16]
 
     def test_no_filters_keeps_everything(self):
         flights = [_flight(Airline.AA), _flight(Airline.DL)]

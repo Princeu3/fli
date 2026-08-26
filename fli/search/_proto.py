@@ -262,8 +262,8 @@ _MAX_U64 = (1 << 64) - 1
 
 
 def encode_tfs_segment(
-    origin: str,
-    dest: str,
+    origin: str | Sequence[str],
+    dest: str | Sequence[str],
     date: str,
     legs: Sequence[LegSpec] = (),
     max_stops: int | None = None,
@@ -271,8 +271,8 @@ def encode_tfs_segment(
     """Encode one travel direction of a ``tfs`` itinerary.
 
     Args:
-        origin: IATA code the direction departs from.
-        dest: IATA code the direction arrives at.
+        origin: IATA code, or airport choices, the direction departs from.
+        dest: IATA code, or airport choices, the direction arrives at.
         date: Departure date in ``YYYY-MM-DD`` format.
         legs: Physical flights pinned for this direction, if any. Supplying
             them narrows a search to itineraries that include them — that is
@@ -298,8 +298,14 @@ def encode_tfs_segment(
             + _length_delim(5, leg.airline.encode())
             + _length_delim(6, leg.flight_number.encode()),
         )
-    body += _length_delim(13, _varint_field(1, 1) + _length_delim(2, origin.encode()))
-    body += _length_delim(14, _varint_field(1, 1) + _length_delim(2, dest.encode()))
+    origins = (origin,) if isinstance(origin, str) else tuple(origin)
+    destinations = (dest,) if isinstance(dest, str) else tuple(dest)
+    if not origins or not destinations:
+        raise ValueError("origin and dest must each contain at least one airport")
+    for code in origins:
+        body += _length_delim(13, _varint_field(1, 1) + _length_delim(2, code.encode()))
+    for code in destinations:
+        body += _length_delim(14, _varint_field(1, 1) + _length_delim(2, code.encode()))
     return _length_delim(3, body)
 
 
